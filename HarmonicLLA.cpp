@@ -1,13 +1,13 @@
 #include <imagina/pixel_management.h>
 #include <imagina/output_info_helper.h>
-#include "HInfMLA.h"
+#include "HarmonicLLA.h"
 
-namespace HInfMLA {
-	const Imagina::PixelDataInfo *HInfMLAEvaluator::GetOutputInfo() {
+namespace HarmonicLLA {
+	const Imagina::PixelDataInfo *HarmonicLLAEvaluator::GetOutputInfo() {
 		IM_GET_OUTPUT_INFO_IMPL(Output, Value);
 	}
 
-	void HInfMLAEvaluator::Prepare(const real_hp &x, const real_hp &y, real_hr radius, const StandardEvaluationParameters &parameters) {
+	void HarmonicLLAEvaluator::Prepare(const real_hp &x, const real_hp &y, real_hr radius, const StandardEvaluationParameters &parameters) {
 		this->parameters = parameters;
 		delete[] reference;
 		LAStages.clear();
@@ -19,7 +19,7 @@ namespace HInfMLA {
 		if (!CreateLAFromOrbit()) return;
 		while (CreateNewLAStage());
 	}
-	void HInfMLAEvaluator::ComputeOrbit(const real_hp &x, const real_hp &y, real_hr radius) {
+	void HarmonicLLAEvaluator::ComputeOrbit(const real_hp &x, const real_hp &y, real_hr radius) {
 		reference = new complex[parameters.Iterations + 1];
 
 		complex_hp C = complex_hp(x, y);
@@ -45,29 +45,20 @@ namespace HInfMLA {
 		referenceLength = i;
 	}
 
-	bool HInfMLAEvaluator::CreateLAFromOrbit() {
+	bool HarmonicLLAEvaluator::CreateLAFromOrbit() {
 		size_t Period = 0;
 
-		real minMagnitude = magnitude(reference[1]);
-		real prevMinMagnitude = minMagnitude;
-
-		LAStep step = LAStep(0, 0.0);
+		LAStep step = LAStep(0, 0.0, reference[1]);
 
 		size_t i;
-		for (i = 1; i < referenceLength; i++) {
-			real magnitudeZ = magnitude(reference[i]);
+		for (i = 2; i < referenceLength; i++) {
+			auto [newStep, dipDetected] = step.Step(reference[i]);
 
-			if (magnitudeZ < minMagnitude) {
-				prevMinMagnitude = minMagnitude;
-				minMagnitude = magnitudeZ;
-
-				if (minMagnitude < prevMinMagnitude * DipDetectionThreshold) {
-					Period = i;
-					break;
-				}
+			if (dipDetected) {
+				Period = i;
+				break;
 			}
-
-			step = step.Step(reference[i]);
+			step = newStep;
 		}
 
 		LASteps.push_back(step);
@@ -79,18 +70,27 @@ namespace HInfMLA {
 			return false;
 		}
 
-		real threshold = prevMinMagnitude * sqrt(minMagnitude / prevMinMagnitude);
-
-		step = LAStep(i, reference[i]);
-		i++;
-
+		if (i + 1 >= referenceLength) {
+			step = LAStep(i, reference[i]);
+			i++;
+		} else {
+			step = LAStep(i, reference[i], reference[i + 1]);
+			i += 2;
+		}
 		for (; i < referenceLength; i++) {
-			if (magnitude(reference[i]) < threshold || step.Length >= Period) {
+			auto [newStep, dipDetected] = step.Step(reference[i]);
+
+			if (dipDetected || step.Length >= Period) {
 				LASteps.push_back(step);
 
-				step = LAStep(i, reference[i]);
+				if (i + 1 >= referenceLength || newStep.DetectDip(reference[i + 1])) {
+					step = LAStep(i, reference[i]);
+				} else {
+					step = LAStep(i, reference[i], reference[i + 1]);
+					i++;
+				}
 			} else {
-				step = step.Step(reference[i]);
+				step = newStep;
 			}
 		}
 
@@ -101,59 +101,63 @@ namespace HInfMLA {
 		return true;
 	}
 
-	bool HInfMLAEvaluator::CreateNewLAStage() {
+	bool HarmonicLLAEvaluator::CreateNewLAStage() {
 		LAStageInfo prevStage = LAStages.back();
 		size_t begin = LASteps.size();
 
 		size_t Period = 0;
 		size_t i = prevStage.Begin;
 
-		real minMagnitude = magnitude(LASteps[i + 1].Z);
-		real prevMinMagnitude = minMagnitude;
-
-		LAStep step = LASteps[i];
+		LAStep step = LASteps[i].Composite(LASteps[i + 1]).first;
 		step.NextStageLAIndex = i;
-		i++;
+		i += 2;
 
 		for (; i < prevStage.End; i++) {
-			real magnitudeZ = magnitude(LASteps[i].Z);
+			auto [newStep, dipDetected] = step.Composite(LASteps[i]);
 
-			if (magnitudeZ < minMagnitude) {
-				prevMinMagnitude = minMagnitude;
-				minMagnitude = magnitudeZ;
+			if (dipDetected) {
+				Period = step.Length;
 
-				if (minMagnitude < prevMinMagnitude * DipDetectionThreshold) {
-					Period = step.Length;
-					break;
+				LASteps.push_back(step);
+
+				if (i + 1 >= prevStage.End || newStep.DetectDip(LASteps[i + 1].Z)) {
+					step = LASteps[i];
+					step.NextStageLAIndex = i;
+					i++;
+				} else {
+					step = LASteps[i].Composite(LASteps[i + 1]).first;
+					step.NextStageLAIndex = i;
+					i += 2;
 				}
+				break;
 			}
-
-			step = step.Composite(LASteps[i]);
+			step = newStep;
 		}
 
-		LASteps.push_back(step);
-
 		if (!Period) {
+			LASteps.push_back(step);
 			LAStages.push_back({ begin, LASteps.size() });
 			LASteps.push_back(LASteps[prevStage.End]);
 
 			return false;
 		}
 
-		real threshold = prevMinMagnitude * sqrt(minMagnitude / prevMinMagnitude);
-
-		step = LASteps[i];
-		step.NextStageLAIndex = i;
-		i++;
-
 		for (; i < prevStage.End; i++) {
-			if (magnitude(LASteps[i].Z) < threshold || step.Length >= Period) {
+			auto [newStep, dipDetected] = step.Composite(LASteps[i]);
+
+			if (dipDetected || step.Length >= Period) {
 				LASteps.push_back(step);
 
-				step = LASteps[i];
-				step.NextStageLAIndex = i;
+				if (i + 1 >= prevStage.End || newStep.DetectDip(LASteps[i + 1].Z)) {
+					step = LASteps[i];
+					step.NextStageLAIndex = i;
+				} else {
+					step = LASteps[i].Composite(LASteps[i + 1]).first;
+					step.NextStageLAIndex = i;
+					i++;
+				}
 			} else {
-				step = step.Composite(LASteps[i]);
+				step = newStep;
 			}
 		}
 
@@ -164,7 +168,7 @@ namespace HInfMLA {
 		return true;
 	}
 
-	void HInfMLAEvaluator::Evaluate(IRasterizer rasterizer) {
+	void HarmonicLLAEvaluator::Evaluate(IRasterizer rasterizer) {
 		real_hr x, y;
 		while (rasterizer.GetPixel(x, y)) {
 			complex dc = { real(x), real(y) };

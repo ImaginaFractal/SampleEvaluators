@@ -2,7 +2,7 @@
 #include <imagina/evaluator.h>
 #include <vector>
 
-namespace HInfLLA {
+namespace HarmonicMLA {
 	using namespace Imagina;
 
 	inline real_sr magnitude(const complex_sr &z) {
@@ -15,7 +15,6 @@ namespace HInfLLA {
 		using complex = complex_sr;
 
 		static constexpr real ValidRadiusScale = 0x1.0p-24;
-		static constexpr real DipDetectionThreshold = 0x1.0p-10;
 
 		complex Z, A, B;
 		real ValidRadius, ValidRadiusC;
@@ -27,20 +26,10 @@ namespace HInfLLA {
 		explicit LAStep(size_t i, complex z) :
 			Z(z), A(1.0), B(1.0), ValidRadius(1.0), ValidRadiusC(1.0), Length(1), NextStageLAIndex(i) {}
 
-		LAStep(size_t i, complex z0, complex z1) :
-			Z(z0), A(real(2.0) * z1), B(A + 1.0),
-			ValidRadius(magnitude(z1) * ValidRadiusScale),
-			ValidRadiusC(ValidRadius),
-			Length(2), NextStageLAIndex(i) {}
-
 		LAStep &operator=(const LAStep &) = default;
 		LAStep &operator=(LAStep &&) = default;
 
-		bool DetectDip(complex z) const {
-			return magnitude(z) * ValidRadiusScale / magnitude(A) < ValidRadius * DipDetectionThreshold;
-		}
-
-		std::pair<LAStep, bool> Step(complex z) const {
+		LAStep Step(complex z) const {
 			LAStep result;
 			real radius = magnitude(z) * ValidRadiusScale;
 
@@ -53,12 +42,10 @@ namespace HInfLLA {
 			result.Length = Length + 1;
 			result.NextStageLAIndex = NextStageLAIndex;
 
-			bool dipDetected = result.ValidRadius < ValidRadius * DipDetectionThreshold;
-
-			return { result, dipDetected };
+			return result;
 		}
 
-		std::pair<LAStep, bool> Composite(const LAStep &step) const {
+		LAStep Composite(const LAStep &step) const {
 			LAStep result;
 
 			real radius = magnitude(step.Z) * ValidRadiusScale;
@@ -67,8 +54,6 @@ namespace HInfLLA {
 			result.ValidRadiusC = std::min(ValidRadiusC, radius / magnitude(B));
 			result.A = 2.0 * step.Z * A;
 			result.B = 2.0 * step.Z * B;
-
-			bool dipDetected = result.ValidRadius < ValidRadius * DipDetectionThreshold;
 
 			result.ValidRadius = std::min(result.ValidRadius, step.ValidRadius / magnitude(result.A));
 			result.ValidRadiusC = std::min(result.ValidRadiusC, step.ValidRadius / magnitude(result.B));
@@ -79,11 +64,11 @@ namespace HInfLLA {
 			result.Length = Length + step.Length;
 			result.NextStageLAIndex = NextStageLAIndex;
 
-			return { result, dipDetected };
+			return result;
 		}
 	};
 
-	class HInfLLAEvaluator {
+	class HarmonicMLAEvaluator {
 		using real = real_sr;
 		using complex = complex_sr;
 		struct Output {
@@ -94,6 +79,8 @@ namespace HInfLLA {
 			uint64_t Begin;
 			uint64_t End;
 		};
+
+		static constexpr real PeriodDetectionThreshold = 0x1.0p-4;
 
 		StandardEvaluationParameters parameters;
 
@@ -115,4 +102,4 @@ namespace HInfLLA {
 	};
 }
 
-IMPLEMENT_INTERFACE(HInfLLA::HInfLLAEvaluator, Imagina::IEvaluator);
+IMPLEMENT_INTERFACE(HarmonicMLA::HarmonicMLAEvaluator, Imagina::IEvaluator);
